@@ -408,6 +408,7 @@ def pipeline(
     revision: Optional[str] = None,
     use_fast: bool = True,
     use_auth_token: Optional[Union[str, bool]] = None,
+    trust_remote_code: bool = False,
     model_kwargs: Dict[str, Any] = None,
     pipeline_class: Optional[Any] = None,
     **kwargs
@@ -491,6 +492,10 @@ def pipeline(
         use_auth_token (`str` or *bool*, *optional*):
             The token to use as HTTP bearer authorization for remote files. If `True`, will use the token generated
             when running `transformers-cli login` (stored in `~/.huggingface`).
+        trust_remote_code (`bool`, *optional*, defaults to `False`):
+            Whether or not to allow for custom code defined on the Hub in their own modeling, configuration,
+            tokenization or even pipeline files. This option should only be set to `True` for repositories you trust
+            and in which you have read the code, as it will execute code present on the Hub on your local machine.
         model_kwargs:
             Additional dictionary of keyword arguments passed along to the model's `from_pretrained(...,
             **model_kwargs)` function.
@@ -519,6 +524,10 @@ def pipeline(
     ```"""
     if model_kwargs is None:
         model_kwargs = {}
+    # Make sure we only pass use_auth_token once as a kwarg (it used to be possible to pass it in model_kwargs,
+    # this is to keep BC).
+    use_auth_token = model_kwargs.pop("use_auth_token", use_auth_token)
+    hub_kwargs = {"revision": revision, "use_auth_token": use_auth_token, "trust_remote_code": trust_remote_code}
 
     if task is None and model is None:
         raise RuntimeError(
@@ -543,9 +552,9 @@ def pipeline(
     # Config is the primordial information item.
     # Instantiate config if needed
     if isinstance(config, str):
-        config = AutoConfig.from_pretrained(config, revision=revision, _from_pipeline=task, **model_kwargs)
+        config = AutoConfig.from_pretrained(config, _from_pipeline=task, **hub_kwargs, **model_kwargs)
     elif config is None and isinstance(model, str):
-        config = AutoConfig.from_pretrained(model, revision=revision, _from_pipeline=task, **model_kwargs)
+        config = AutoConfig.from_pretrained(model, _from_pipeline=task, **hub_kwargs, **model_kwargs)
 
     custom_tasks = {}
     if config is not None and len(getattr(config, "custom_pipelines", {})) > 0:
@@ -571,6 +580,12 @@ def pipeline(
     if task in custom_tasks:
         targeted_task, task_options = clean_custom_task(custom_tasks[task])
         if pipeline_class is None:
+            if not trust_remote_code:
+                raise ValueError(
+                    f"Loading this pipeline requires you to execute the code in the pipeline file in that"
+                    f" repo on your local machine. Make sure you have read the code there to avoid malicious use, then"
+                    f" set the option `trust_remote_code=True` to remove this error."
+                )
             class_ref = targeted_task["impl"]
             module_file, class_name = class_ref.split(".")
             pipeline_class = get_class_from_dynamic_module(
@@ -592,10 +607,7 @@ def pipeline(
             "Using a pipeline without specifying a model name and revision in production is not recommended."
         )
         if config is None and isinstance(model, str):
-            config = AutoConfig.from_pretrained(model, revision=revision, _from_pipeline=task, **model_kwargs)
-
-    # Retrieve use_auth_token and add it to model_kwargs to be used in .from_pretrained
-    model_kwargs["use_auth_token"] = model_kwargs.get("use_auth_token", use_auth_token)
+            config = AutoConfig.from_pretrained(model, _from_pipeline=task, **hub_kwargs, **model_kwargs)
 
     model_name = model if isinstance(model, str) else None
 
@@ -608,8 +620,8 @@ def pipeline(
         model_classes=model_classes,
         config=config,
         framework=framework,
-        revision=revision,
         task=task,
+        **hub_kwargs,
         **model_kwargs,
     )
 
@@ -653,7 +665,7 @@ def pipeline(
                 tokenizer_kwargs = model_kwargs
 
             tokenizer = AutoTokenizer.from_pretrained(
-                tokenizer_identifier, revision=revision, use_fast=use_fast, _from_pipeline=task, **tokenizer_kwargs
+                tokenizer_identifier, use_fast=use_fast, _from_pipeline=task, **hub_kwargs, **tokenizer_kwargs
             )
 
     if load_feature_extractor:
@@ -674,7 +686,7 @@ def pipeline(
         # Instantiate feature_extractor if needed
         if isinstance(feature_extractor, (str, tuple)):
             feature_extractor = AutoFeatureExtractor.from_pretrained(
-                feature_extractor, revision=revision, _from_pipeline=task, **model_kwargs
+                feature_extractor, _from_pipeline=task, **hub_kwargs, **model_kwargs
             )
 
             if (
