@@ -284,8 +284,8 @@ class LlamaAttention(nn.Module):
     def __init__(self, config: LlamaConfig, layer_idx: Optional[int] = None):
         super().__init__()
         self.config = config
-        self.attention_dropout = config.attention_dropout
         self.layer_idx = layer_idx
+        self.attention_dropout = config.attention_dropout
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
@@ -353,6 +353,8 @@ class LlamaAttention(nn.Module):
             )
 
         bsz, q_len, _ = hidden_states.size()
+        if not isinstance(past_key_value, Cache):
+            past_key_value = DynamicCache.from_past_key_value(past_key_value)
 
         if self.config.pretraining_tp > 1:
             key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
@@ -380,24 +382,11 @@ class LlamaAttention(nn.Module):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-        if isinstance(past_key_value, Cache):
-            past_key_value.update_pre_rotation(key_states, value_states)
-
-        kv_seq_len = key_states.shape[-2]
-        if past_key_value:
-            kv_seq_len += past_key_value[0].shape[-2]
+        kv_seq_len = key_states.shape[-2] + past_key_value.get_seq_length(self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
-        if past_key_value:
-            # reuse k, v, self_attention
-            key_states = torch.cat([past_key_value[0], key_states], dim=2)
-            value_states = torch.cat([past_key_value[1], value_states], dim=2)
-
-        if isinstance(past_key_value, Cache):
-            past_key_value.update(key_states, value_states)
-        elif past_key_value is not None:
-            past_key_value = (key_states, value_states)
+        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx)
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
@@ -878,7 +867,7 @@ class LlamaModel(LlamaPreTrainedModel):
         past_key_values_length = 0
         if use_cache:
             if not isinstance(past_key_values, Cache):
-                past_key_values = self.from_legacy_cache(past_key_values)
+                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
             past_key_values_length = past_key_values.get_seq_length()
 
         if position_ids is None:
@@ -955,7 +944,7 @@ class LlamaModel(LlamaPreTrainedModel):
 
         next_cache = None
         if use_cache:
-            next_cache = self.to_legacy_cache(next_decoder_cache) if use_legacy_cache else next_decoder_cache
+            next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
