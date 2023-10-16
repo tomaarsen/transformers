@@ -463,6 +463,8 @@ class LlamaFlashAttention2(LlamaAttention):
         output_attentions = False
 
         bsz, q_len, _ = hidden_states.size()
+        if not isinstance(past_key_value, Cache):
+            past_key_value = DynamicCache.from_past_key_value(past_key_value)
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
