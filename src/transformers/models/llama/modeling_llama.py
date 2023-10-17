@@ -845,7 +845,7 @@ class LlamaModel(LlamaPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        use_legacy_cache: Optional[bool] = None,
+        use_legacy_cache: Optional[bool] = True,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -1001,7 +1001,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        use_legacy_cache: Optional[bool] = None,
+        use_legacy_cache: Optional[bool] = True,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -1084,7 +1084,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         )
 
     def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, use_legacy_cache=None, **kwargs
+        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, use_legacy_cache=True, **kwargs
     ):
         if past_key_values is not None:
             past_length = past_key_values[0][0].shape[2]
@@ -1177,7 +1177,7 @@ class LlamaForSequenceClassification(LlamaPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        use_legacy_cache: Optional[bool] = None,
+        use_legacy_cache: Optional[bool] = True,
     ) -> Union[Tuple, SequenceClassifierOutputWithPast]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
