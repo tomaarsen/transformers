@@ -353,9 +353,6 @@ class LlamaAttention(nn.Module):
             )
 
         bsz, q_len, _ = hidden_states.size()
-        if not isinstance(past_key_value, Cache):
-            past_key_value = DynamicCache.from_past_key_value(past_key_value)
-
         if self.config.pretraining_tp > 1:
             key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
             query_slices = self.q_proj.weight.split(
@@ -382,11 +379,14 @@ class LlamaAttention(nn.Module):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-        kv_seq_len = key_states.shape[-2] + past_key_value.get_seq_length(self.layer_idx)
+        kv_seq_len = key_states.shape[-2]
+        if past_key_value is not None:
+            kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
-        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx)
+        if past_key_value is not None:
+            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cos, sin)
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
@@ -463,8 +463,6 @@ class LlamaFlashAttention2(LlamaAttention):
         output_attentions = False
 
         bsz, q_len, _ = hidden_states.size()
-        if not isinstance(past_key_value, Cache):
-            past_key_value = DynamicCache.from_past_key_value(past_key_value)
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
@@ -946,7 +944,7 @@ class LlamaModel(LlamaPreTrainedModel):
 
         next_cache = None
         if use_cache:
-            next_cache = next_decoder_cache.to_legacy_cache() if use_legacy_cache else next_decoder_cache
+            next_cache = self.to_legacy_cache(next_decoder_cache) if use_legacy_cache else next_decoder_cache
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
