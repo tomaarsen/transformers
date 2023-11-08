@@ -1,34 +1,33 @@
-from abc import ABC, abstractmethod
-<<<<<<< HEAD
-<<<<<<< HEAD
-from typing import Dict, List, Optional, Tuple, TypeVar
+from typing import List, Optional, Tuple
 
 import torch
 
 
-=======
-from typing import Dict, List, Tuple, TypeVar
-import torch
-
->>>>>>> 523380cb6 (Draft version of new KV Caching)
-=======
-from typing import Dict, List, Optional, Tuple, TypeVar
-
-import torch
-
-
->>>>>>> 1129513b3 (Address numerous PR suggestions)
-T = TypeVar("T")
-
-
-class Cache(ABC):
+class Cache:
     def __init__(self) -> None:
-<<<<<<< HEAD
-<<<<<<< HEAD
-        self.key_cache: Dict[int, Tuple[torch.Tensor]] = {}
-        self.value_cache: Dict[int, Tuple[torch.Tensor]] = {}
+        self.key_cache: List[Tuple[torch.Tensor]] = []
+        self.value_cache: List[Tuple[torch.Tensor]] = []
 
-    @abstractmethod
+    def __getitem__(self, key: int) -> List[Tuple[torch.Tensor]]:
+        """
+        Support for backwards-compatible `past_key_value` indexing, e.g. `past_key_value[0][0].shape[2]` to get the
+        sequence length.
+        """
+        if key == 0:
+            return self.key_cache
+        elif key == 1:
+            return self.value_cache
+        else:
+            raise KeyError(f"Cache only supports 0 (key) and 1 (value) indexing, got {key}")
+
+    def __iter__(self):
+        """
+        Support for backwards-compatible `past_key_value` iteration, e.g. `for x in past_key_value:` to iterate over
+        keys and values
+        """
+        yield self.key_cache
+        yield self.value_cache
+
     def update(
         self,
         key_states: torch.Tensor,
@@ -37,10 +36,10 @@ class Cache(ABC):
         cos: Optional[torch.Tensor] = None,
         sin: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        pass
+        raise NotImplementedError("Make sure to implement `update` in a subclass.")
 
-    def get_seq_length(self, layer_idx: int = 0) -> int:
-        if layer_idx not in self.key_cache:
+    def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
+        if len(self.key_cache) <= layer_idx:
             return 0
         return self.key_cache[layer_idx].shape[-2]
 
@@ -69,9 +68,9 @@ class DynamicCache(Cache):
         cos: Optional[torch.Tensor] = None,
         sin: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if layer_idx not in self.key_cache:
-            self.key_cache[layer_idx] = key_states
-            self.value_cache[layer_idx] = value_states
+        if len(self.key_cache) <= layer_idx:
+            self.key_cache.append(key_states)
+            self.value_cache.append(value_states)
         else:
             self.key_cache[layer_idx] = torch.cat([self.key_cache[layer_idx], key_states], dim=-2)
             self.value_cache[layer_idx] = torch.cat([self.value_cache[layer_idx], value_states], dim=-2)
@@ -94,69 +93,11 @@ def apply_rotary_pos_emb_single(
         sin = sin[position_ids].unsqueeze(1)
     rotated_key_states = (key_states * cos) + (rotate_half(key_states) * sin)
     return rotated_key_states
-=======
-        self.cache: Dict[int, Tuple[torch.Tensor]] = {}
-        self.layer_idx = 0
-=======
-        self.key_cache: Dict[int, Tuple[torch.Tensor]] = {}
-        self.value_cache: Dict[int, Tuple[torch.Tensor]] = {}
->>>>>>> 1129513b3 (Address numerous PR suggestions)
-
-    @abstractmethod
-    def update(self, key_states, value_states, layer_idx: int) -> None:
-        pass
-
-    def get_seq_length(self, layer_idx: int = 0) -> int:
-        if layer_idx not in self.key_cache:
-            return 0
-        return self.key_cache[layer_idx].shape[-2]
-
-    def to_legacy_cache(self) -> Tuple[Tuple[torch.Tensor], Tuple[torch.Tensor]]:
-        return (
-            tuple(self.key_cache[layer_idx] for layer_idx in range(len(self.key_cache))),
-            tuple(self.value_cache[layer_idx] for layer_idx in range(len(self.value_cache))),
-        )
-
-    @classmethod
-<<<<<<< HEAD
-    def from_past_key_values(cls, past_key_values: List[torch.FloatTensor]) -> "DynamicCache":
-        raise NotImplementedError()
->>>>>>> 523380cb6 (Draft version of new KV Caching)
-=======
-    def from_past_key_values(cls, past_key_values: Optional[List[torch.FloatTensor]]) -> "DynamicCache":
-        if past_key_values is None:
-            return cls()
-        cache = cls()
-        for layer_idx, (key_states, value_states) in enumerate(zip(*past_key_values)):
-            cache.update(key_states, value_states, layer_idx)
-        return cache
-
-    @classmethod
-    def from_past_key_value(cls, past_key_value: Optional[torch.FloatTensor]) -> "DynamicCache":
-        if past_key_value is None:
-            return cls()
-        cache = cls()
-        cache.update(past_key_value[0], past_key_value[1], 0)
-        return cache
-
-
-class DynamicCache(Cache):
-    def update(self, key_states: torch.Tensor, value_states: torch.Tensor, layer_idx: int) -> None:
-        if layer_idx not in self.key_cache:
-            self.key_cache[layer_idx] = key_states
-            self.value_cache[layer_idx] = value_states
-        else:
-            self.key_cache[layer_idx] = torch.cat([self.key_cache[layer_idx], key_states], dim=-2)
-            self.value_cache[layer_idx] = torch.cat([self.value_cache[layer_idx], value_states], dim=-2)
-
-        return self.key_cache[layer_idx], self.value_cache[layer_idx]
->>>>>>> 1129513b3 (Address numerous PR suggestions)
 
 
 class SinkCache(Cache):
     def __init__(self, window_length: int, num_sink_tokens: int) -> None:
         super().__init__()
-<<<<<<< HEAD
         self.window_length = window_length
         self.num_sink_tokens = num_sink_tokens
         self.cos_sin_cache = {}
@@ -183,7 +124,7 @@ class SinkCache(Cache):
             )
         return self.cos_sin_cache[key_states.shape[-2]]
 
-    def get_seq_length(self, layer_idx: int = 0) -> int:
+    def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
         # Workaround to make 'key_states.shape[-2] + past_key_value.get_seq_length(self.layer_idx)' <= window_length
         return min(super().get_seq_length(layer_idx), self.window_length - 1)
 
@@ -196,10 +137,10 @@ class SinkCache(Cache):
         sin: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # [bsz, num_heads, seq_len, head_dim]
-        if layer_idx not in self.key_cache:
+        if len(self.key_cache) <= layer_idx:
             # Empty cache
-            self.key_cache[layer_idx] = key_states
-            self.value_cache[layer_idx] = value_states
+            self.key_cache.append(key_states)
+            self.value_cache.append(value_states)
 
         elif key_states.shape[-2] + self.get_seq_length(layer_idx) < self.window_length:
             # Growing cache
@@ -229,49 +170,3 @@ class SinkCache(Cache):
                 dim=-2,
             )
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
-=======
-        self.is_prefill = False
-        self.window_length = window_length
-        self.num_sink_tokens = num_sink_tokens
-        self.index = torch.arange(num_sink_tokens, window_length)
-
-    def update_pre_rotation(self, key_states: torch.Tensor, value_states: torch.Tensor, layer_idx: int) -> None:
-        # idx is either 0 for key, 1 for values
-        if layer_idx not in self.key_cache:
-            # first in
-            sink_keys = key_states[: self.num_sink_tokens]
-            sink_values = value_states[: self.num_sink_tokens]
-
-            cached_keys = torch.cat([sink_keys, key_states[:, -self.window_length :]], dim=-1)
-            cached_values = torch.cat([sink_values, value_states[:, -self.window_length :]], dim=-1)
-
-            self.key_cache[layer_idx] = torch.cat([cached_keys[None, :], cached_values[None, :]], dim=0)
-        elif key_states.shape[1] < self.index.shape[-1] + self.num_sink_tokens:
-            # auto-regressive
-            key_len = key_states.shape[1]
-
-            # roll cache to the left
-            self.key_cache[layer_idx]._index_copy(
-                0, self.index[:key_len], self.key_cache[layer_idx][0][self.num_sink_tokens + key_len :]
-            )
-            self.key_cache[layer_idx]._index_copy(
-                1, self.index[:key_len], self.key_cache[layer_idx][1][self.num_sink_tokens + key_len :]
-            )
-
-            # add new tokens
-            self.key_cache[layer_idx]._index_copy(0, self.index[-key_len:], key_states)
-            self.key_cache[layer_idx]._index_copy(1, self.index[-key_len:], value_states)
-        else:
-            self.key_cache[layer_idx]._index_copy(
-                0, self.index, key_states[:, : self.window_length - self.num_sink_tokens]
-            )
-            self.key_cache[layer_idx]._index_copy(
-                1, self.index, value_states[:, : self.window_length - self.num_sink_tokens]
-            )
-
-    def update(self, key_states: torch.Tensor, value_states: torch.Tensor) -> None:
-        pass
-<<<<<<< HEAD
->>>>>>> 523380cb6 (Draft version of new KV Caching)
-=======
->>>>>>> 1129513b3 (Address numerous PR suggestions)
