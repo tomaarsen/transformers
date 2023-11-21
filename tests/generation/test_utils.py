@@ -1909,7 +1909,7 @@ class GenerationTesterMixin:
                     )
 
     def test_new_cache_format(self):
-        # Tests that the new cache format is exactly the same as the legacy one (for models that support it).
+        # Tests that generating with the new format is exactly the same as the legacy one (for models that support it).
         for model_class in self.all_generative_model_classes:
             if "use_legacy_cache" not in inspect.signature(model_class.forward).parameters:
                 self.skipTest("This model does not support the new cache format")
@@ -1935,8 +1935,17 @@ class GenerationTesterMixin:
                 input_ids, attention_mask=attention_mask, use_legacy_cache=False, **generation_kwargs
             )
             self.assertListEqual(legacy_results.sequences.tolist(), new_results.sequences.tolist())
-            # TODO (joao): add checks for the past_key_values themselves, which should exactly match the legacy values
-            # -- requires rebasing with main
+
+            legacy_cache = legacy_results.past_key_values
+            new_cache_converted = new_results.past_key_values.to_legacy_cache()
+            for layer_idx in range(len(legacy_cache)):
+                for kv_idx in range(len(legacy_cache[layer_idx])):
+                    self.assertTrue(
+                        torch.allclose(
+                            legacy_cache[layer_idx][kv_idx],
+                            new_cache_converted[layer_idx][kv_idx],
+                        )
+                    )
 
     def _check_outputs(self, output, input_ids, config, use_cache=False, num_return_sequences=1):
         batch_size, seq_length = input_ids.shape
