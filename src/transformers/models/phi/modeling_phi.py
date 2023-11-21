@@ -25,6 +25,7 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 from ...activations import ACT2FN
+from ...cache_utils import Cache, DynamicCache
 from ...modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 from ...modeling_outputs import (
     BaseModelOutputWithPast,
@@ -196,9 +197,10 @@ class PhiMLP(nn.Module):
 class PhiAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: PhiConfig):
+    def __init__(self, config: PhiConfig, layer_idx: int):
         super().__init__()
         self.config = config
+        self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
@@ -274,7 +276,7 @@ class PhiAttention(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        past_key_value: Optional[Cache] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
@@ -297,7 +299,7 @@ class PhiAttention(nn.Module):
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
-            kv_seq_len += past_key_value[0].shape[-2]
+            kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
 
         # Partial rotary embedding
@@ -317,11 +319,7 @@ class PhiAttention(nn.Module):
         key_states = torch.cat((key_rot, key_pass), dim=-1)
 
         if past_key_value is not None:
-            # reuse k, v, self_attention
-            key_states = torch.cat([past_key_value[0], key_states], dim=2)
-            value_states = torch.cat([past_key_value[1], value_states], dim=2)
-
-        past_key_value = (key_states, value_states) if use_cache else None
+            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cos, sin)
 
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
@@ -810,7 +808,7 @@ class PhiForCausalLM(PhiPreTrainedModel):
 
     # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.prepare_inputs_for_generation
     def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
+        self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, use_legacy_cache=True, **kwargs
     ):
         if past_key_values is not None:
             past_length = past_key_values[0][0].shape[2]
@@ -844,6 +842,7 @@ class PhiForCausalLM(PhiPreTrainedModel):
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
+                "use_legacy_cache": use_legacy_cache,
             }
         )
         return model_inputs
@@ -904,6 +903,7 @@ class PhiForSequenceClassification(PhiPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        use_legacy_cache: Optional[bool] = True,
     ) -> Union[Tuple, SequenceClassifierOutputWithPast]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -923,6 +923,7 @@ class PhiForSequenceClassification(PhiPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            use_legacy_cache=use_legacy_cache,
         )
         hidden_states = model_outputs[0]
         logits = self.score(hidden_states)
