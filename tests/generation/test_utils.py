@@ -1908,6 +1908,36 @@ class GenerationTesterMixin:
                         )
                     )
 
+    def test_new_cache_format(self):
+        # Tests that the new cache format is exactly the same as the legacy one (for models that support it).
+        for model_class in self.all_generative_model_classes:
+            if "use_legacy_cache" not in inspect.signature(model_class.forward).parameters:
+                self.skipTest("This model does not support the new cache format")
+
+            config, input_ids, attention_mask, _ = self._get_input_ids_and_config()
+            config.use_cache = True
+            config.is_decoder = True
+
+            model = model_class(config).to(torch_device).eval()
+            generation_kwargs = {
+                "max_new_tokens": 5,
+                "do_sample": False,
+                # Uses beam search so that the test includes cache reordering
+                "num_beams": 4,
+                "num_return_sequences": 4,
+                # Required to return `past_key_values`
+                "return_dict_in_generate": True,
+            }
+            legacy_results = model.generate(
+                input_ids, attention_mask=attention_mask, use_legacy_cache=True, **generation_kwargs
+            )
+            new_results = model.generate(
+                input_ids, attention_mask=attention_mask, use_legacy_cache=False, **generation_kwargs
+            )
+            self.assertListEqual(legacy_results.sequences.tolist(), new_results.sequences.tolist())
+            # TODO (joao): add checks for the past_key_values themselves, which should exactly match the legacy values
+            # -- requires rebasing with main
+
     def _check_outputs(self, output, input_ids, config, use_cache=False, num_return_sequences=1):
         batch_size, seq_length = input_ids.shape
         num_sequences_in_output = batch_size * num_return_sequences
