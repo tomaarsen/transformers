@@ -745,6 +745,9 @@ MISTRAL_INPUTS_DOCSTRING = r"""
             more detail.
         return_dict (`bool`, *optional*):
             Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+        use_legacy_cache (`bool`, *optional*):
+            If set to `True` (default), will return `past_key_values` as described input above. Otherwise, will return
+            a subclass of `Cache`
 """
 
 

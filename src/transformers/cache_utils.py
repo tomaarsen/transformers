@@ -28,6 +28,13 @@ class Cache:
         yield self.key_cache
         yield self.value_cache
 
+    def __len__(self):
+        """
+        Support for backwards-compatible `past_key_value` length, e.g. `len(past_key_value)`. This value corresponds
+        to the number of layers in the model.
+        """
+        return len(self.key_cache)
+
     def update(
         self,
         key_states: torch.Tensor,

@@ -20,8 +20,10 @@ import unittest
 import warnings
 
 import numpy as np
+from parameterized import parameterized
 
-from transformers import is_torch_available, pipeline
+from transformers import is_torch_available, pipeline, set_seed
+from transformers.cache_utils import DynamicCache
 from transformers.testing_utils import (
     is_flaky,
     require_accelerate,
@@ -1908,8 +1910,11 @@ class GenerationTesterMixin:
                         )
                     )
 
-    def test_new_cache_format(self):
+    @parameterized.expand([(1, False), (1, True), (4, False)])
+    def test_new_cache_format(self, num_beams, do_sample):
         # Tests that generating with the new format is exactly the same as the legacy one (for models that support it).
+        # 👉 tests with and without beam search so that we can test with and without cache reordering.
+        # 👉 tests with and without sampling so we can cover the most common use cases.
         for model_class in self.all_generative_model_classes:
             if "use_legacy_cache" not in inspect.signature(model_class.forward).parameters:
                 self.skipTest("This model does not support the new cache format")
@@ -1921,21 +1926,30 @@ class GenerationTesterMixin:
             model = model_class(config).to(torch_device).eval()
             generation_kwargs = {
                 "max_new_tokens": 5,
-                "do_sample": False,
-                # Uses beam search so that the test includes cache reordering
-                "num_beams": 4,
-                "num_return_sequences": 4,
-                # Required to return `past_key_values`
-                "return_dict_in_generate": True,
+                "do_sample": do_sample,
+                "num_beams": num_beams,
+                "num_return_sequences": num_beams,
+                "return_dict_in_generate": True,  # Required to return `past_key_values`
             }
+
+            # Sets seed before calling `generate` for the case with do_sample=True
+            seed = torch.randint(0, 1000000, (1,)).item()
+            set_seed(seed)
             legacy_results = model.generate(
                 input_ids, attention_mask=attention_mask, use_legacy_cache=True, **generation_kwargs
             )
+            set_seed(seed)
             new_results = model.generate(
                 input_ids, attention_mask=attention_mask, use_legacy_cache=False, **generation_kwargs
             )
-            self.assertListEqual(legacy_results.sequences.tolist(), new_results.sequences.tolist())
 
+            # The two sets of generated sequences must match, despite the cache format between forward passes being
+            # different
+            self.assertListEqual(legacy_results.sequences.tolist(), new_results.sequences.tolist())
+            self.assertTrue(isinstance(legacy_results.past_key_values, tuple))
+            self.assertTrue(isinstance(new_results.past_key_values, DynamicCache))
+
+            # The contents of the two caches, when converted to the same format (in both directions!), must match
             legacy_cache = legacy_results.past_key_values
             new_cache_converted = new_results.past_key_values.to_legacy_cache()
             for layer_idx in range(len(legacy_cache)):
@@ -1944,6 +1958,17 @@ class GenerationTesterMixin:
                         torch.allclose(
                             legacy_cache[layer_idx][kv_idx],
                             new_cache_converted[layer_idx][kv_idx],
+                        )
+                    )
+
+            new_cache = new_results.past_key_values
+            legacy_cache_converted = DynamicCache.from_legacy_cache(legacy_results.past_key_values)
+            for layer_idx in range(len(new_cache)):
+                for kv_idx in range(len(new_cache[layer_idx])):
+                    self.assertTrue(
+                        torch.allclose(
+                            new_cache[layer_idx][kv_idx],
+                            legacy_cache_converted[layer_idx][kv_idx],
                         )
                     )
 

@@ -24,6 +24,7 @@ import torch
 import torch.distributed as dist
 from torch import nn
 
+from ..cache_utils import DynamicCache
 from ..integrations.deepspeed import is_deepspeed_zero3_enabled
 from ..modeling_outputs import CausalLMOutputWithPast, Seq2SeqLMOutput
 from ..models.auto import (
@@ -3263,6 +3264,8 @@ class GenerationMixin:
             )
             if model_kwargs["past_key_values"] is not None:
                 model_kwargs["past_key_values"] = self._reorder_cache(model_kwargs["past_key_values"], beam_idx)
+                if not model_kwargs.get("use_legacy_cache"):
+                    model_kwargs["past_key_values"] = DynamicCache.from_legacy_cache(model_kwargs["past_key_values"])
 
             if return_dict_in_generate and output_scores:
                 beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
@@ -3598,6 +3601,8 @@ class GenerationMixin:
             )
             if model_kwargs["past_key_values"] is not None:
                 model_kwargs["past_key_values"] = self._reorder_cache(model_kwargs["past_key_values"], beam_idx)
+                if not model_kwargs.get("use_legacy_cache"):
+                    model_kwargs["past_key_values"] = DynamicCache.from_legacy_cache(model_kwargs["past_key_values"])
 
             if return_dict_in_generate and output_scores:
                 beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
@@ -3985,6 +3990,8 @@ class GenerationMixin:
                 model_kwargs["past_key_values"] = self._reorder_cache(
                     model_kwargs["past_key_values"], reordering_indices
                 )
+                if not model_kwargs.get("use_legacy_cache"):
+                    model_kwargs["past_key_values"] = DynamicCache.from_legacy_cache(model_kwargs["past_key_values"])
 
             # increase cur_len
             cur_len = cur_len + 1
@@ -4325,6 +4332,8 @@ class GenerationMixin:
             )
             if model_kwargs["past_key_values"] is not None:
                 model_kwargs["past_key_values"] = self._reorder_cache(model_kwargs["past_key_values"], beam_idx)
+                if not model_kwargs.get("use_legacy_cache"):
+                    model_kwargs["past_key_values"] = DynamicCache.from_legacy_cache(model_kwargs["past_key_values"])
 
             if return_dict_in_generate and output_scores:
                 beam_indices = tuple((beam_indices[beam_idx[i]] + (beam_idx[i],) for i in range(len(beam_indices))))
