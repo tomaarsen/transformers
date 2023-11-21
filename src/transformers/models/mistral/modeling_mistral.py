@@ -370,7 +370,7 @@ class MistralFlashAttention2(MistralAttention):
 
                 if past_key.shape[-2] != self.config.sliding_window - 1:
                     raise ValueError(
-                        f"past key much have a shape of (`batch_size, num_heads, self.config.sliding_window-1, head_dim`), got"
+                        f"past key must have a shape of (`batch_size, num_heads, self.config.sliding_window-1, head_dim`), got"
                         f" {past_key.shape}"
                     )
 
@@ -385,11 +385,7 @@ class MistralFlashAttention2(MistralAttention):
         # repeat k/v heads if n_kv_heads < n_heads
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
-
-        # TODO: Mistral does not have dropout in the config??
-        # It is recommended to use dropout with FA according to the docs
-        # when training.
-        dropout_rate = 0.0  # if not self.training else self.attn_dropout
+        dropout_rate = 0.0 if not self.training else self.attention_dropout
 
         # In PEFT, usually we cast the layer norms in float32 for training stability reasons
         # therefore the input hidden states gets silently casted in float32. Hence, we need
@@ -509,7 +505,12 @@ class MistralFlashAttention2(MistralAttention):
         else:
             if not use_sliding_windows:
                 attn_output = flash_attn_func(
-                    query_states, key_states, value_states, dropout, softmax_scale=softmax_scale, causal=True
+                    query_states,
+                    key_states,
+                    value_states,
+                    dropout,
+                    softmax_scale=softmax_scale,
+                    causal=self.is_causal,
                 )
             else:
                 attn_output = flash_attn_func(
@@ -518,7 +519,7 @@ class MistralFlashAttention2(MistralAttention):
                     value_states,
                     dropout,
                     softmax_scale=softmax_scale,
-                    causal=True,
+                    causal=self.is_causal,
                     window_size=(self.config.sliding_window, self.config.sliding_window),
                 )
 
@@ -680,10 +681,6 @@ class MistralPreTrainedModel(PreTrainedModel):
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
 
-    def _set_gradient_checkpointing(self, module, value=False):
-        if isinstance(module, MistralModel):
-            module.gradient_checkpointing = value
-
 
 MISTRAL_INPUTS_DOCSTRING = r"""
     Args:
@@ -766,10 +763,6 @@ class MistralModel(MistralPreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        # create attention mask cache that trickles down to each attention layer
-        # so that the attention_mask cache can be shared among layers
-        self.attn_mask_converter = AttnMaskConverter(is_causal=True, sliding_window=config.sliding_window)
-
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
             [MistralDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
@@ -843,7 +836,7 @@ class MistralModel(MistralPreTrainedModel):
             attention_mask is not None
             and hasattr(self.config, "_flash_attn_2_enabled")
             and self.config._flash_attn_2_enabled
-            and past_key_values is not None
+            and use_cache
         ):
             is_padding_right = attention_mask[:, -1].sum().item() != batch_size
             if is_padding_right:
@@ -857,16 +850,14 @@ class MistralModel(MistralPreTrainedModel):
             # 2d mask is passed through the layers
             attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
         else:
-            key_value_length = seq_length + past_key_values_length
             # 4d mask is passed through the layers
-            if attention_mask is not None:
-                attention_mask = self.attn_mask_converter.to_4d(
-                    attention_mask, seq_length, key_value_length, dtype=inputs_embeds.dtype
-                )
-            else:
-                attention_mask = self.attn_mask_converter.to_causal_4d(
-                    batch_size, seq_length, key_value_length, dtype=inputs_embeds.dtype, device=inputs_embeds.device
-                )
+            attention_mask = _prepare_4d_causal_attention_mask(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window=self.config.sliding_window,
+            )
 
         hidden_states = inputs_embeds
 
@@ -887,19 +878,14 @@ class MistralModel(MistralPreTrainedModel):
                 all_hidden_states += (hidden_states,)
 
             if self.gradient_checkpointing and self.training:
-
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        # None for past_key_value
-                        return module(*inputs, past_key_values, output_attentions)
-
-                    return custom_forward
-
-                layer_outputs = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(decoder_layer),
+                layer_outputs = self._gradient_checkpointing_func(
+                    decoder_layer.__call__,
                     hidden_states,
                     attention_mask,
                     position_ids,
+                    past_key_values,
+                    output_attentions,
+                    use_cache,
                 )
             else:
                 layer_outputs = decoder_layer(
